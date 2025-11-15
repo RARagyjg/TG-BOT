@@ -1,3 +1,4 @@
 instagrapi==1.17.7
 pyTelegramBotAPI
+Pillow==10.2.0
 flask

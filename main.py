@@ -1,170 +1,135 @@
 import telebot
+from instagrapi import Client
 import threading
 import time
-from instagrapi import Client
+from keep_alive import keep_alive
 
-# ------------------------
-# CONFIG
-# ------------------------
-BOT_TOKEN = "8054752328:AAHW91DOipkoYVHVZuOBB5VId_DB9OTjRCw"  # Replace this
+keep_alive()   # Only 1 keep alive call
+
+# ---------------------------
+# TELEGRAM BOT
+# ---------------------------
+BOT_TOKEN = "8054752328:AAHW91DOipkoYVHVZuOBB5VId_DB9OTjRCw"
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ------------------------
-# PER USER DATA STORE
-# ------------------------
-user_sessions = {}   # Telegram user_id → Instagram Client
-user_threads = {}    # Telegram user_id → Spam Thread
-user_gc = {}          # Telegram user_id → (gc_id, message_to_spam)
-
-# ------------------------
-# UTILITY: SEND TYPING EFFECT
-# ------------------------
-def ig_typing_effect(cl, thread_id, text):
-    try:
-        cl.direct_send("typing…", thread_ids=[thread_id])
-    except:
-        pass
-    time.sleep(2)
-    cl.direct_send(text, thread_ids=[thread_id])
+USER = {}
+GC_LIST = {}
+SELECTED_GC = {}
+SPAM = {}
 
 
-# ------------------------
-# SPAM LOOP (runs in background)
-# ------------------------
-def spam_loop(user_id):
-    cl = user_sessions[user_id]
-    gc_id, message = user_gc[user_id]
-
-    while True:
-        if user_id not in user_threads:  
-            break  # stop if user stopped
-        try:
-            ig_typing_effect(cl, gc_id, message)
-        except Exception as e:
-            print("Spam error:", e)
-        time.sleep(10)  # 10 sec delay
-
-
-# ------------------------
-# COMMAND: /start
-# ------------------------
+# ---------------------------
+# /start
+# ---------------------------
 @bot.message_handler(commands=['start'])
-def start(message):
-    uid = message.from_user.id
-
-    bot.send_chat_action(message.chat.id, "typing")
-    bot.reply_to(message,
-        "👋 Welcome!\nEnter your Instagram username:"
-    )
-
-    bot.register_next_step_handler(message, ask_password)
+def start(msg):
+    chat = msg.chat.id
+    USER[chat] = {"step": "ask_username"}
+    bot.reply_to(msg, "👋 Send your Instagram **username**:")
 
 
-# ------------------------
-# STEP 2: Ask password
-# ------------------------
-def ask_password(message):
-    uid = message.from_user.id
-    username = message.text.strip()
+# ---------------------------
+# MAIN HANDLER
+# ---------------------------
+@bot.message_handler(func=lambda m: True)
+def steps(msg):
+    chat = msg.chat.id
 
-    bot.reply_to(message, "🔐 Now send your Instagram password:")
-    bot.register_next_step_handler(message, login_user, username)
+    if USER.get(chat, {}).get("step") == "ask_username":
+        USER[chat]["username"] = msg.text.strip()
+        USER[chat]["step"] = "ask_password"
+        bot.reply_to(msg, "🔐 Send your Instagram **password**:")
+        return
+
+    if USER.get(chat, {}).get("step") == "ask_password":
+        USER[chat]["password"] = msg.text.strip()
+        USER[chat]["step"] = "login"
+        bot.reply_to(msg, "⏳ Trying to login…")
+        return login_user(msg)
+
+    if USER.get(chat, {}).get("step") == "select_gc":
+        try:
+            index = int(msg.text) - 1
+            SELECTED_GC[chat] = GC_LIST[chat][index]
+            USER[chat]["step"] = "ask_message"
+            bot.reply_to(msg, f"✅ Selected: {SELECTED_GC[chat].thread_title}\nSend spam message:")
+        except:
+            bot.reply_to(msg, "❌ Invalid number.")
+        return
+
+    if USER.get(chat, {}).get("step") == "ask_message":
+        SPAM[chat] = {"text": msg.text, "run": True}
+        USER[chat]["step"] = "spamming"
+        bot.reply_to(msg, "🚀 Spam Started! Type /stop to stop.")
+
+        threading.Thread(target=spam_loop, args=(chat,), daemon=True).start()
+        return
 
 
-# ------------------------
-# STEP 3: Instagram Login
-# ------------------------
-def login_user(message, username):
-    uid = message.from_user.id
-    password = message.text.strip()
-
-    bot.send_chat_action(message.chat.id, "typing")
-    bot.reply_to(message, "⏳ Logging in… please wait")
-
+# ---------------------------
+# LOGIN USER
+# ---------------------------
+def login_user(msg):
+    chat = msg.chat.id
     cl = Client()
 
     try:
-        cl.login(username, password)
-        user_sessions[uid] = cl
+        cl.login(USER[chat]["username"], USER[chat]["password"])
+        USER[chat]["client"] = cl
+        bot.reply_to(msg, "✅ Login Successful!\n⏳ Fetching Group Chats…")
     except Exception as e:
-        bot.reply_to(message, f"❌ Login failed\n{e}")
+        bot.reply_to(msg, f"❌ Login Failed:\n`{e}`")
+        USER[chat]["step"] = "ask_username"
         return
 
-    # Fetch GCs
-    threads = cl.direct_threads()
+    threads = cl.direct_threads(amount=50)
+    groups = [t for t in threads if t.thread_type in ("group", "multi_participant")]
 
-    if not threads:
-        bot.reply_to(message, "❌ No group chats found.")
+    if not groups:
+        bot.send_message(chat, "❌ No group chats found.")
+        USER[chat]["step"] = "ask_username"
         return
 
-    gc_list = ""
-    for i, t in enumerate(threads):
-        gc_list += f"{i}. {t.thread_title}\n"
+    GC_LIST[chat] = groups
 
-    bot.reply_to(message, f"👇 Select GC number:\n\n{gc_list}")
+    txt = "📌 Your Group Chats:\n\n"
+    for i, g in enumerate(groups):
+        txt += f"{i+1}. {g.thread_title or 'Unnamed'}\n"
 
-    bot.register_next_step_handler(message, select_gc, threads)
-
-
-# ------------------------
-# STEP 4: Select GC
-# ------------------------
-def select_gc(message, threads):
-    uid = message.from_user.id
-
-    if not message.text.isdigit():
-        bot.reply_to(message, "❌ Send only number.")
-        return
-
-    index = int(message.text)
-
-    if index < 0 or index >= len(threads):
-        bot.reply_to(message, "❌ Invalid number.")
-        return
-
-    thread = threads[index]
-    gc_id = thread.id
-
-    user_gc[uid] = (gc_id, None)
-
-    bot.reply_to(message, "✍️ Send the message you want to spam:")
-    bot.register_next_step_handler(message, set_message)
+    bot.send_message(chat, txt + "\nSend GC number:")
+    USER[chat]["step"] = "select_gc"
 
 
-# ------------------------
-# STEP 5: Save spam message
-# ------------------------
-def set_message(message):
-    uid = message.from_user.id
-    text = message.text
+# ---------------------------
+# SPAM LOOP
+# ---------------------------
+def spam_loop(chat):
+    cl = USER[chat]["client"]
+    gc = SELECTED_GC[chat]
 
-    gc_id, _ = user_gc[uid]
-    user_gc[uid] = (gc_id, text)
+    while SPAM[chat]["run"]:
+        try:
+            cl.direct_send(SPAM[chat]["text"], [gc.thread_id])
+        except Exception as e:
+            print("Spam Error:", e)
 
-    bot.reply_to(message, "🚀 Bot started!\nSend /stop to stop.")
-
-    # Start background thread
-    t = threading.Thread(target=spam_loop, args=(uid,))
-    t.daemon = True
-    user_threads[uid] = t
-    t.start()
+        time.sleep(10)
 
 
-# ------------------------
-# COMMAND: /stop
-# ------------------------
+# ---------------------------
+# STOP COMMAND
+# ---------------------------
 @bot.message_handler(commands=['stop'])
-def stop(message):
-    uid = message.from_user.id
-
-    if uid in user_threads:
-        del user_threads[uid]
-        bot.reply_to(message, "⛔ Bot stopped.")
+def stop_spam(msg):
+    chat = msg.chat.id
+    if SPAM.get(chat):
+        SPAM[chat]["run"] = False
+        bot.reply_to(msg, "🛑 Spam Stopped.")
     else:
-        bot.reply_to(message, "Bot was not running.")
+        bot.reply_to(msg, "No spam running.")
 
 
-# ------------------------
-# RUN BOT
-# ------------------------
-bot.polling(none_stop=True)
+# ---------------------------
+# START BOT
+# ---------------------------
+bot.polling(non_stop=True, skip_pending=True)

@@ -1,19 +1,25 @@
-import os
 import telebot
 from instagrapi import Client
 from instagrapi.exceptions import ChallengeRequired, TwoFactorRequired
 import threading
 import time
-from flask import Flask  # Flask ab sirf health check ke liye hai
+from flask import Flask
+import os
 
 # ---------------------------
-# ENVIRONMENT VARIABLES
+# BOT TOKEN (HARDCODED)
 # ---------------------------
-BOT_TOKEN = os.environ.get("TG_BOT_TOKEN")
-
+BOT_TOKEN = "8054752328:AAHW91DOipkoYVHVZuOBB5VId_DB9OTjRCw"  # <-- Replace with your Telegram bot token
 bot = telebot.TeleBot(BOT_TOKEN, threaded=True)
+
+# ---------------------------
+# FLASK SERVER FOR RENDER HEALTH CHECK
+# ---------------------------
 server = Flask(__name__)
 
+# ---------------------------
+# GLOBAL DICTS
+# ---------------------------
 USERS = {}
 GC_LIST = {}
 SELECTED = {}
@@ -24,11 +30,9 @@ SPAM = {}
 # ---------------------------
 def create_client(chat_id):
     cl = Client()
-
     cl.set_locale('en_US')
     cl.set_country('IN')
     cl.set_timezone_offset(19800)
-
     cl.set_device({
         "android_version": 26,
         "android_release": "8.0.0",
@@ -39,40 +43,25 @@ def create_client(chat_id):
         "model": "Redmi Note 5 Pro",
         "cpu": "qcom",
     })
-
     session_file = f"{chat_id}_session.json"
     if os.path.exists(session_file):
-        try:
-            cl.load_settings(session_file)
-        except:
-            pass
-
+        try: cl.load_settings(session_file)
+        except: pass
     return cl
 
 def save_session(cl, chat_id):
-    try:
-        cl.dump_settings(f"{chat_id}_session.json")
-    except:
-        pass
+    try: cl.dump_settings(f"{chat_id}_session.json")
+    except: pass
 
-# ---------------------------
-# TELEGRAM TYPING EFFECT
-# ---------------------------
 def tg_type(chat_id):
-    try:
-        bot.send_chat_action(chat_id, "typing")
-    except:
-        pass
+    try: bot.send_chat_action(chat_id, "typing")
+    except: pass
 
-# ---------------------------
-# IG SEND + TYPING EFFECT
-# ---------------------------
 def ig_typing_and_send(cl, thread, text):
     try:
         cl.direct_send("typing…", [thread.id])
         time.sleep(1.2)
-    except:
-        pass
+    except: pass
     cl.direct_send(text, [thread.id])
 
 # ---------------------------
@@ -82,33 +71,28 @@ def ig_typing_and_send(cl, thread, text):
 def start(msg):
     USERS[msg.chat.id] = {"step": "ask_username"}
     tg_type(msg.chat.id)
-    bot.reply_to(msg, "👋 Send your🌙 Instagram **username**:")
+    bot.reply_to(msg, "👋 Send your Instagram **username**:")
 
 @bot.message_handler(commands=["help"])
 def help_cmd(msg):
     bot.reply_to(msg, "Use /start to begin login process.")
 
 # ---------------------------
-# MAIN MSG HANDLER
+# MAIN HANDLER
 # ---------------------------
 @bot.message_handler(func=lambda m: True)
 def main_handler(msg):
     chat = msg.chat.id
     text = msg.text.strip()
-
-    if chat not in USERS:
-        return bot.reply_to(msg, "Type /start")
-
+    if chat not in USERS: return bot.reply_to(msg, "Type /start")
     step = USERS[chat]["step"]
 
-    # username
     if step == "ask_username":
         USERS[chat]["username"] = text
         USERS[chat]["step"] = "ask_password"
         bot.reply_to(msg, "🔐 Send your **password**:")
         return
 
-    # password
     if step == "ask_password":
         USERS[chat]["password"] = text
         USERS[chat]["step"] = "logging"
@@ -116,22 +100,16 @@ def main_handler(msg):
         threading.Thread(target=login_attempt, args=(chat,), daemon=True).start()
         return
 
-    # group selection
     if step == "select_gc":
-        if not text.isdigit():
-            return bot.reply_to(msg, "❌ Send number only.")
-
-        idx = int(text) - 1
+        if not text.isdigit(): return bot.reply_to(msg, "❌ Send number only.")
+        idx = int(text)-1
         groups = GC_LIST.get(chat, [])
-        if idx < 0 or idx >= len(groups):
-            return bot.reply_to(msg, "❌ Wrong number.")
-
+        if idx<0 or idx>=len(groups): return bot.reply_to(msg, "❌ Wrong number.")
         SELECTED[chat] = groups[idx]
         USERS[chat]["step"] = "ask_message"
         bot.reply_to(msg, "✍️ Send message to spam:")
         return
 
-    # message for spam
     if step == "ask_message":
         SPAM[chat] = {"text": text, "running": True}
         USERS[chat]["step"] = "spamming"
@@ -142,7 +120,6 @@ def main_handler(msg):
     if step == "spamming":
         return bot.reply_to(msg, "Spam running… Use /stop.")
 
-    # OTP
     if step == "awaiting_2fa":
         threading.Thread(target=complete_2fa, args=(chat, text), daemon=True).start()
         return
@@ -157,30 +134,25 @@ def main_handler(msg):
 def login_attempt(chat):
     username = USERS[chat]["username"]
     password = USERS[chat]["password"]
-
     cl = create_client(chat)
     USERS[chat]["client_temp"] = cl
-
     try:
         cl.login(username, password)
         save_session(cl, chat)
         USERS[chat]["client"] = cl
         USERS[chat]["step"] = "logged_in"
-        bot.send_message(chat, "✅ Login successful!\nFetching your groups…")
+        bot.send_message(chat, "✅ Login🌙successful!\nFetching your groups…")
         load_groups(chat)
         return
-
     except TwoFactorRequired:
         USERS[chat]["step"] = "awaiting_2fa"
         bot.send_message(chat, "🔐 Send your 2FA OTP:")
         return
-
     except ChallengeRequired:
         USERS[chat]["step"] = "awaiting_challenge"
         USERS[chat]["challenge_url"] = cl.last_json["challenge"]["url"]
         bot.send_message(chat, "📩 Check email/SMS & send code:")
         return
-
     except Exception as e:
         bot.send_message(chat, f"❌ Login failed:\n`{e}`", parse_mode="Markdown")
         USERS[chat]["step"] = "ask_username"
@@ -189,7 +161,6 @@ def complete_2fa(chat, code):
     cl = USERS[chat]["client_temp"]
     username = USERS[chat]["username"]
     password = USERS[chat]["password"]
-
     try:
         cl.two_factor_login(username, password, code)
         save_session(cl, chat)
@@ -204,7 +175,6 @@ def complete_2fa(chat, code):
 def complete_challenge(chat, code):
     cl = USERS[chat]["client_temp"]
     url = USERS[chat]["challenge_url"]
-
     try:
         cl.challenge_send_security_code(url, code)
         save_session(cl, chat)
@@ -212,7 +182,6 @@ def complete_challenge(chat, code):
         USERS[chat]["step"] = "logged_in"
         bot.send_message(chat, "🎉 Verified! Fetching groups…")
         load_groups(chat)
-
     except Exception as e:
         bot.send_message(chat, f"❌ Challenge failed:\n`{e}`", parse_mode="Markdown")
         USERS[chat]["step"] = "ask_username"
@@ -224,16 +193,13 @@ def load_groups(chat):
     cl = USERS[chat]["client"]
     try:
         threads = cl.direct_threads()
-        groups = [t for t in threads if t.thread_type in ("group", "multi_participant")]
+        groups = [t for t in threads if t.thread_type in ("group","multi_participant")]
         GC_LIST[chat] = groups
-
         txt = "📌 Your Group Chats:\n\n"
-        for i, g in enumerate(groups):
+        for i,g in enumerate(groups):
             txt += f"{i+1}. {g.thread_title or 'Unnamed'}\n"
-
         bot.send_message(chat, txt + "\nSend GC number:")
         USERS[chat]["step"] = "select_gc"
-
     except Exception as e:
         bot.send_message(chat, f"❌ Error:\n`{e}`", parse_mode="Markdown")
 
@@ -244,12 +210,9 @@ def spam_loop(chat):
     cl = USERS[chat]["client"]
     thread = SELECTED[chat]
     text = SPAM[chat]["text"]
-
     while SPAM[chat]["running"]:
-        try:
-            ig_typing_and_send(cl, thread, text)
-        except:
-            pass
+        try: ig_typing_and_send(cl, thread, text)
+        except: pass
         time.sleep(10)
 
 # ---------------------------
@@ -265,7 +228,7 @@ def stop(msg):
         bot.reply_to(msg, "No spam running.")
 
 # ---------------------------
-# HEALTH CHECK (OPTIONAL)
+# FLASK HEALTH CHECK
 # ---------------------------
 @server.route("/")
 def home():
@@ -275,9 +238,7 @@ def home():
 # RUN BOT
 # ---------------------------
 if __name__ == "__main__":
-    # Start Flask in separate thread for Render health check
+    bot.remove_webhook()  # Remove any webhook before polling
     threading.Thread(target=lambda: server.run(host="0.0.0.0", port=10000), daemon=True).start()
-    
-    # Start Telegram bot in polling mode
     print("Bot started in polling mode…")
     bot.infinity_polling()

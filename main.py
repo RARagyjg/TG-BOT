@@ -4,115 +4,118 @@ import threading
 import time
 from keep_alive import keep_alive
 
-keep_alive()
+keep_alive()  # render ke liye
 
 BOT_TOKEN = "8054752328:AAHW91DOipkoYVHVZuOBB5VId_DB9OTjRCw"
 bot = telebot.TeleBot(BOT_TOKEN)
 
 USER = {}
 GC_LIST = {}
-SPAM = {}
 SELECTED_GC = {}
-
+SPAM = {}
 
 # ---------------------------
-# /start
+# Start Command
 # ---------------------------
 @bot.message_handler(commands=['start'])
 def start(msg):
     chat = msg.chat.id
     USER[chat] = {"step": "ask_username"}
-    bot.reply_to(msg, "👋 Welcome!\nSend your Instagram **username**:")
+    bot.reply_to(msg,
+                 "👋 Welcome!\nSend your Instagram **username**:")
 
 
 # ---------------------------
-# ALL TEXT HANDLER
+# Handle Steps
 # ---------------------------
 @bot.message_handler(func=lambda m: True)
-def flow(msg):
+def steps(msg):
     chat = msg.chat.id
 
-    # -------- Username Step --------
+    # Ask username
     if USER.get(chat, {}).get("step") == "ask_username":
         USER[chat]["username"] = msg.text.strip()
         USER[chat]["step"] = "ask_password"
         bot.reply_to(msg, "🔐 Send your Instagram **password**:")
         return
 
-    # -------- Password Step --------
+    # Ask password
     if USER.get(chat, {}).get("step") == "ask_password":
         USER[chat]["password"] = msg.text.strip()
         USER[chat]["step"] = "login"
         bot.reply_to(msg, "⏳ Logging into Instagram…")
         return login_user(msg)
 
-    # -------- Select GC Step --------
+    # Selecting GC
     if USER.get(chat, {}).get("step") == "select_gc":
         try:
-            index = int(msg.text.strip()) - 1
+            index = int(msg.text) - 1
             SELECTED_GC[chat] = GC_LIST[chat][index]
             USER[chat]["step"] = "ask_message"
-            bot.reply_to(
-                msg,
-                f"✅ Selected Group: {SELECTED_GC[chat].thread_title}\n\nSend the SPAM message:"
-            )
+
+            bot.reply_to(msg,
+                f"✅ Selected: {SELECTED_GC[chat].thread_title}\n"
+                "✍️ Send spam message:")
+
         except:
-            bot.reply_to(msg, "❌ Invalid number. Try again.")
+            bot.reply_to(msg, "❌ Invalid number.")
         return
 
-    # -------- Ask Message Step --------
+    # Ask spam message
     if USER.get(chat, {}).get("step") == "ask_message":
-        SPAM[chat] = {"run": True, "text": msg.text}
+        SPAM[chat] = {"text": msg.text, "run": True}
         USER[chat]["step"] = "spamming"
 
-        bot.reply_to(msg, "🚀 Spam Started!\nSend /stop to stop spam.")
+        bot.reply_to(msg, "🚀 Spam Started!\nSend /stop to stop.")
 
-        # Start background looping thread
-        threading.Thread(
-            target=spam_loop,
-            args=(chat,),
-            daemon=True
-        ).start()
-
+        threading.Thread(target=spam_loop, args=(chat,), daemon=True).start()
         return
 
 
 # ---------------------------
-# LOGIN USER
+# LOGIN FUNCTION (100% FIXED)
 # ---------------------------
 def login_user(msg):
     chat = msg.chat.id
     cl = Client()
 
     try:
+        # SAFE LOGIN SETTINGS (PREVENT BLOCK)
+        cl.set_locale("en_US")
+        cl.set_country("IN")
+        cl.set_timezone_offset(19800)
+        
         cl.login(USER[chat]["username"], USER[chat]["password"])
         USER[chat]["client"] = cl
-        bot.reply_to(msg, "✅ Login Successful!\nFetching group chats…")
+
+        bot.reply_to(msg, "✅ Login Successful!\n⏳ Fetching your group chats…")
+
     except Exception as e:
         bot.reply_to(msg, f"❌ Login Failed:\n`{e}`")
         USER[chat]["step"] = "ask_username"
         return
 
-    threads = cl.direct_threads(amount=60)
-    groups = [t for t in threads if t.thread_type == "group"]
+    # GET GROUP CHATS
+    threads = cl.direct_threads(amount=50)
+    groups = [t for t in threads if t.thread_type in ("group", "multi_participant")]
 
     if not groups:
-        bot.send_message(chat, "❌ No GC found in this account.")
+        bot.send_message(chat, "❌ No group chats found.")
         USER[chat]["step"] = "ask_username"
         return
 
     GC_LIST[chat] = groups
 
-    text = "📌 **Your Group Chats:**\n\n"
+    txt = "📌 Your Group Chats:\n\n"
     for i, g in enumerate(groups):
-        text += f"{i+1}. {g.thread_title or 'Unnamed'}\n"
+        txt += f"{i+1}. {g.thread_title}\n"
 
-    bot.send_message(chat, text + "\n👉 Send the GC number:")
+    bot.send_message(chat, txt + "\n➡️ Send the GC number:")
     USER[chat]["step"] = "select_gc"
 
 
 # ---------------------------
-# SPAM LOOP (24/7)
+# SPAM LOOP
 # ---------------------------
 def spam_loop(chat):
     cl = USER[chat]["client"]
@@ -120,13 +123,11 @@ def spam_loop(chat):
 
     while SPAM[chat]["run"]:
         try:
-            # Using gc.id (thread_id FIXED)
-            cl.direct_send(SPAM[chat]["text"], [gc.id])
-            print(f"Sent to {gc.id}")
-        except Exception as e:
-            print("Spam Error:", e)
+            cl.direct_send(SPAM[chat]["text"], [gc.thread_id])
+        except:
+            pass
 
-        time.sleep(10)   # Anti-ban safe delay
+        time.sleep(10)
 
 
 # ---------------------------
@@ -135,15 +136,14 @@ def spam_loop(chat):
 @bot.message_handler(commands=['stop'])
 def stop(msg):
     chat = msg.chat.id
-
     if SPAM.get(chat):
         SPAM[chat]["run"] = False
-        bot.reply_to(msg, "🛑 Spam Stopped Successfully!")
+        bot.reply_to(msg, "🛑 Spam stopped.")
     else:
-        bot.reply_to(msg, "⚠️ No spam is running.")
+        bot.reply_to(msg, "❌ No spam running.")
 
 
 # ---------------------------
-# POLLING
+# START BOT
 # ---------------------------
 bot.polling(non_stop=True, skip_pending=True)

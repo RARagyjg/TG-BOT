@@ -1,6 +1,6 @@
 pyTelegramBotAPI
-instagrapi
-Pillow==9.5.0
+instagrapi==1.17.0
+Pillow
 setuptools
 wheel
-Flask
+flask

@@ -1,6 +1,6 @@
 pyTelegramBotAPI
 instagrapi
-pillow
+Pillow==9.5.0
 setuptools
 wheel
-flask
+Flask

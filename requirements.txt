@@ -3,3 +3,4 @@ instagrapi
 pillow
 setuptools
 wheel
+flask
